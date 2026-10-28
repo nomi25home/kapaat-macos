@@ -4,7 +4,6 @@ import SwiftUI
 /// Renders the full web UI inside a fixed-size panel; below it a compact status footer.
 struct MenuBarContentView: View {
     @EnvironmentObject private var server: ServerManager
-    @State private var showWindow = false
 
     var body: some View {
         VStack(spacing: 0) {
