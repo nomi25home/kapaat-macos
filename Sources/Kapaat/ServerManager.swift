@@ -12,7 +12,7 @@ final class ServerManager: ObservableObject {
             case .stopped:          return "Stopped"
             case .starting:         return "Starting…"
             case .running:          return "Running"
-            case .failed(let msg):  return "Error: \(msg)"
+            case .failed(let msg):  return msg
             }
         }
 
@@ -20,16 +20,21 @@ final class ServerManager: ObservableObject {
     }
 
     @Published private(set) var status: Status = .stopped
+    /// Last stderr output captured from the server process; shown in the error UI.
+    @Published private(set) var lastError: String = ""
+
     let port: Int = 8096
     var serverURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
 
     private var process: Process?
     private var startTask: Task<Void, Never>?
+    private var stderrPipe: Pipe?
 
     init() { start() }
 
     func start() {
         guard process == nil else { return }
+        lastError = ""
         status = .starting
 
         startTask = Task {
@@ -50,6 +55,7 @@ final class ServerManager: ObservableObject {
     func stop() {
         startTask?.cancel()
         startTask = nil
+        stderrPipe = nil
         process?.terminate()
         process = nil
         status = .stopped
@@ -67,13 +73,37 @@ final class ServerManager: ObservableObject {
             "-m", "uvicorn", "app:app",
             "--host", "127.0.0.1",
             "--port", "\(port)",
-            "--log-level", "warning",
+            "--log-level", "info",
         ]
         p.currentDirectoryURL = URL(fileURLWithPath: appDir)
-        p.environment = buildEnvironment()
+        p.environment = buildEnvironment(appDir: appDir)
 
-        p.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.status = .stopped }
+        // Capture stderr so startup errors are visible in the UI
+        let pipe = Pipe()
+        p.standardError  = pipe
+        p.standardOutput = pipe
+        stderrPipe = pipe
+
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            DispatchQueue.main.async { self?.lastError += text }
+        }
+
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Only mark as failed (not just stopped) on non-zero exit
+                if proc.terminationStatus != 0 {
+                    let detail = self.lastError.isEmpty
+                        ? "Process exited with code \(proc.terminationStatus)"
+                        : self.lastError.suffix(400).trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.status = .failed(detail)
+                } else {
+                    self.status = .stopped
+                }
+                self.process = nil
+            }
         }
 
         try p.run()
@@ -85,12 +115,16 @@ final class ServerManager: ObservableObject {
         for _ in 0..<60 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if Task.isCancelled { return }
+            // If the process already died, stop waiting
+            if process == nil { return }
             if (try? await URLSession.shared.data(from: healthURL)) != nil {
                 status = .running
                 return
             }
         }
-        status = .failed("Server did not respond within 30 s")
+        if case .starting = status {
+            status = .failed("Server did not respond within 30 s\n\n\(lastError)".trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     // MARK: - Path resolution
@@ -110,7 +144,9 @@ final class ServerManager: ObservableObject {
                 return dir
             }
         }
-        throw AppError.appDirNotFound
+        // Surface all paths checked so the user knows where we looked
+        let searched = candidates.joined(separator: "\n  ")
+        throw AppError.appDirNotFound(searched: searched)
     }
 
     /// Prefer .venv inside appDir, then Homebrew / system Python
@@ -129,14 +165,15 @@ final class ServerManager: ObservableObject {
         return found
     }
 
-    private func buildEnvironment() -> [String: String] {
+    private func buildEnvironment(appDir: String) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["AUTH_SECRET_KEY"]  = persistentSecretKey()
         env["BASE_URL"]         = "http://127.0.0.1:\(port)"
         env["DB_PATH"]          = dataDirectory() + "/kapaat.db"
         env["PHOTOS_DIR"]       = dataDirectory() + "/photos"
-        // suppress Python stdout buffering so logs reach Console.app
         env["PYTHONUNBUFFERED"] = "1"
+        // Ensure the venv site-packages are on the path
+        env["PYTHONPATH"]       = appDir
         return env
     }
 
@@ -145,6 +182,9 @@ final class ServerManager: ObservableObject {
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = appSupport.appendingPathComponent("Kapaat").path
         try? FileManager.default.createDirectory(atPath: dir,
+            withIntermediateDirectories: true)
+        // Also create photos subdirectory
+        try? FileManager.default.createDirectory(atPath: dir + "/photos",
             withIntermediateDirectories: true)
         return dir
     }
@@ -163,15 +203,15 @@ final class ServerManager: ObservableObject {
     }
 
     enum AppError: LocalizedError {
-        case appDirNotFound
+        case appDirNotFound(searched: String)
         case pythonNotFound
 
         var errorDescription: String? {
             switch self {
-            case .appDirNotFound:
-                return "Cannot find Kapaat app directory. Run setup.sh first."
+            case .appDirNotFound(let searched):
+                return "app.py not found. Run setup.sh first.\n\nLooked in:\n  \(searched)"
             case .pythonNotFound:
-                return "Python 3 not found. Install it with Homebrew: brew install python"
+                return "Python 3 not found.\n\nInstall with Homebrew:\n  brew install python"
             }
         }
     }

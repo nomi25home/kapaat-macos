@@ -25,15 +25,27 @@ struct MenuBarContentView: View {
 
     private var splashView: some View {
         VStack(spacing: 16) {
-            Image(systemName: "archivebox.fill")
+            Image(systemName: statusIcon)
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
 
-            Text(server.status.label)
+            Text(statusTitle)
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
             if case .failed = server.status {
+                if !server.lastError.isEmpty {
+                    ScrollView {
+                        Text(server.lastError)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                    .frame(maxWidth: 760, maxHeight: 200)
+                    .background(.quaternary)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
                 Button("Retry") { server.restart() }
                     .buttonStyle(.borderedProminent)
             } else if server.status == .starting {
@@ -42,7 +54,24 @@ struct MenuBarContentView: View {
                     .scaleEffect(0.7)
             }
         }
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var statusIcon: String {
+        switch server.status {
+        case .running:  return "checkmark.circle"
+        case .starting: return "arrow.clockwise"
+        case .failed:   return "exclamationmark.triangle"
+        case .stopped:  return "archivebox"
+        }
+    }
+
+    private var statusTitle: String {
+        switch server.status {
+        case .failed(let msg): return msg.components(separatedBy: "\n").first ?? msg
+        default:               return server.status.label
+        }
     }
 
     private var footer: some View {
