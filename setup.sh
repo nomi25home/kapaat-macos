@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
-# setup.sh — one-time: create Python venv next to the repo so Kapaat.app can find it.
-# Run once after cloning: cd kapaat && ./macos/setup.sh
+# setup.sh — one-time: create a Python venv in the kapaat repo and install deps.
+# Usage (from kapaat-macos/):
+#   ./setup.sh ../kapaat          # explicit path
+#   ./setup.sh                    # defaults to ../kapaat (sibling directory)
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+KAPAAT_DIR="${1:-../kapaat}"
 
-echo "→ Creating Python venv at $REPO_DIR/.venv …"
-python3 -m venv "$REPO_DIR/.venv"
+# Resolve to an absolute path so error messages are unambiguous
+KAPAAT_DIR="$(cd "$KAPAAT_DIR" 2>/dev/null && pwd)" || {
+    echo "Error: directory not found: ${1:-../kapaat}"
+    exit 1
+}
 
-echo "→ Installing dependencies…"
-"$REPO_DIR/.venv/bin/pip" install --upgrade pip --quiet
-"$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt" --quiet
+if [ ! -f "$KAPAAT_DIR/app.py" ]; then
+    echo "Error: app.py not found in $KAPAAT_DIR"
+    echo "Usage: ./setup.sh /path/to/kapaat"
+    exit 1
+fi
+
+echo "→ Creating Python venv at $KAPAAT_DIR/.venv ..."
+python3 -m venv "$KAPAAT_DIR/.venv"
+
+echo "→ Installing dependencies..."
+"$KAPAAT_DIR/.venv/bin/pip" install --upgrade pip --quiet
+"$KAPAAT_DIR/.venv/bin/pip" install -r "$KAPAAT_DIR/requirements.txt" --quiet
 
 echo ""
 echo "✓ Setup complete."
 echo ""
 echo "Now build the macOS app:"
-echo "  cd macos && ./build.sh"
+echo "  ./build.sh"
 echo ""
-echo "Then open the bundle:"
-echo "  open macos/build/Kapaat.app"
+echo "Then launch:"
+echo "  open build/Kapaat.app"
