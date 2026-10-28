@@ -64,6 +64,15 @@ final class ServerManager: ObservableObject {
     // MARK: - Private
 
     private func launchServer() throws {
+        // If a server is already answering on our port, adopt it instead of fighting it.
+        if isPortResponding() {
+            status = .running
+            return
+        }
+
+        // Kill any stale process that has the port bound but isn't responding.
+        freePort(port)
+
         let appDir = try resolveAppDirectory()
         let python  = try resolvePython(in: appDir)
 
@@ -125,6 +134,42 @@ final class ServerManager: ObservableObject {
         if case .starting = status {
             status = .failed("Server did not respond within 30 s\n\n\(lastError)".trimmingCharacters(in: .whitespacesAndNewlines))
         }
+    }
+
+    // MARK: - Port helpers
+
+    /// True if a Kapaat-like HTTP server is already answering on our port.
+    private func isPortResponding() -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/login") else { return false }
+        var request = URLRequest(url: url, timeoutInterval: 1)
+        request.httpMethod = "HEAD"
+        var responding = false
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { _, resp, _ in
+            responding = (resp as? HTTPURLResponse) != nil
+            sem.signal()
+        }.resume()
+        sem.wait()
+        return responding
+    }
+
+    /// Kill any process that has the given TCP port bound (SIGTERM, then SIGKILL).
+    private func freePort(_ port: Int) {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-ti", "tcp:\(port)"]
+        let pipe = Pipe()
+        lsof.standardOutput = pipe
+        lsof.standardError  = Pipe()   // discard
+        guard (try? lsof.run()) != nil else { return }
+        lsof.waitUntilExit()
+        let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for pidStr in raw.split(separator: "\n") {
+            guard let pid = Int32(pidStr.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+            kill(pid, SIGTERM)
+        }
+        // Brief pause so the OS releases the port before we try to bind it.
+        Thread.sleep(forTimeInterval: 0.5)
     }
 
     // MARK: - Path resolution
